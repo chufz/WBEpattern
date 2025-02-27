@@ -1,0 +1,191 @@
+---
+title: "Cluster analysis Markkleeberg pos on 3 days"
+author: "Carolin Huber & Inga Haalck"
+date: "2023-07-29"
+output: html_document
+---
+
+# Installation of packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(plotly)
+library(scales)
+library(reshape2)
+library(data.table)
+library(factoextra)
+library(cluster)
+library(stats)
+library(kml)
+library(knitr)
+```
+
+# Data that needs to be loaded
+
+```{R}
+dat <- read.csv("02_b_datawrangling_targets_readyforkml.csv") # load annotated table
+```
+
+# Define filenames for output storage
+
+```{R}
+cluster_rds <- "cluster_model.rds" # storage of the calculated cluster, can be used later to safe calculation time
+trajectories_cluster <- "05_a_kml_pred_test.csv" # cluster centers used for further prediction script
+cluster_annotation_csv <- "05_a_kml_allbatches_clusterannotations_test.csv" # annotation separated by clusters
+cluster_assignment <- "05_a_kml_allbatches_test.csv" # file with cluster for each feature
+```
+
+# Data cleanup
+
+Replace NA by 1/4 of min value
+```{r}
+get_min <- apply(dat, 1, function(x) min(x, na.rm = T))
+
+get_min <- apply(dat[, 4:ncol(dat)], 1, function(x) min(x, na.rm = TRUE))
+
+for (i in 1:nrow(dat)) {
+  xx <- which(is.na(dat[i, ]))
+  dat[i, xx] <- get_min[i] / 4
+}
+```
+
+Subset the dataframe to exclude the first two columns which contain metadata and not SI values
+```{r}
+compounds_ids <- dat[, 1]
+compounds_names <- dat[, 2]
+compound_class <- dat[, 3]
+data_subset <- dat[, -(1:4)]
+```
+
+# Perform longitudinal k-means clustering (kml) for 72 hours 
+```{R}
+data_subset_norm <- t(scale(t(log2(data_subset))))
+
+# calculate, run separately and added to markdown as rds file
+set.seed(1)
+event_long <- clusterLongData(data_subset_norm, idAll = c(1:nrow(data_subset_norm)), time = c(1:ncol(data_subset_norm)), varNames = "Signal abundance")
+
+# perform kml analysis
+kml(event_long,
+  nbClusters = 2:6,
+  nbRedrawing = 10,
+  toPlot = "none",
+  parAlgo = parALGO(saveFreq = 100, distanceName = "euclidean", distance = diss.CORT)
+)
+
+# save kml results
+saveRDS(event_long, file = cluster_rds)
+```
+
+# optional: re-load cluster results  
+```{r}
+# Load the R object from the file
+event_long <- readRDS(cluster_rds)
+```
+
+```{r}
+# plot all criteria to choose cluster number
+plotAllCriterion(event_long)
+# chose cluster number
+no_clusters <- 5
+# plot overview results for selected number of clusters
+plot(event_long, no_clusters, parMean = parMEAN(cex = 0.3), parTraj = parTRAJ(col = "clusters"), toPlot = "traj")
+```
+
+```{r}
+# extract cluster members
+dat$cluster <- getClusters(event_long, no_clusters)
+# get probabilities for cluster fitting/ cluster evaluation
+dat$clustProp <- getBestPostProba(event_long, nbCluster = no_clusters, clusterRank = 1)
+hist(dat$clustProp)
+# filter by cluster probability
+dat <- dat[which(dat$clustProp > 0.9), ]
+```
+
+# extract cluster centroids 
+```{r}
+mean.trajectories <- calculTrajMean(event_long["traj"], event_long["c5"][[1]]["clusters"])
+
+mean_traj <- as.data.frame(mean.trajectories)
+
+mean_traj_long <- mean_traj %>%
+  rownames_to_column(var = "cluster")
+
+mean_traj_long2 <- mean_traj_long %>%
+  pivot_longer(cols = starts_with("t"), names_to = "hour", values_to = "value") %>%
+  mutate(hour = as.numeric(stringr::str_remove(hour, "t")))
+
+ggplot(mean_traj_long2, aes(x = hour, y = value, color = cluster)) +
+  geom_line() +
+  labs(x = "Hour", y = "Value", color = "Cluster") +
+  scale_y_continuous(limits = c(-6, 6)) +
+  theme_minimal()
+
+# export
+write.csv(mean_traj, trajectories_cluster)
+```
+
+# Extraction of cluster annotations 
+```{R} 
+# Initialize an empty list to store annotations for each cluster
+cluster_annotations <- list()
+
+# Iterate over each cluster
+for (i in 1:no_clusters) {
+  # Subset the data for the current cluster
+  x <- dat[which(dat$cluster == LETTERS[i]), ]
+  x <- x[grep("[a-z]", x$compounds_names), ]
+  # Add the annotations to the list
+  cluster_annotations[[i]] <- data.frame(Cluster = LETTERS[i], compounds_names = x$compounds_names)
+}
+
+# Combine the annotations from all clusters into a single data frame
+annotations_df <- do.call(rbind, cluster_annotations)
+
+# Print the first few rows of the new data frame
+head(annotations_df)
+for (i in 1:no_clusters) {
+  # get annotations summarized
+  x <- dat[which(dat$cluster == LETTERS[i]), ]
+  x <- x[grep("[a-z]", x$compounds_names), ]
+  # summarize output
+  message("\n ************************** Target annotations in cluster ", LETTERS[i], " **************************")
+  print(kable(x$compounds_names))
+}
+
+annotations_names <- annotations_df$compounds_names
+
+kml_compounds <- dat %>%
+  filter(compounds_names %in% annotations_names) %>%
+  select(compounds_names, compound.class.level.1) %>%
+  rename(compounds_class = compound.class.level.1)
+
+# combine the two data frames
+kml_compoundclasses <- annotations_df %>%
+  left_join(kml_compounds, by = "compounds_names")
+
+# filter out only compounds that remain from the whole standard list & make new data frame with additional information
+filtered_classes <- standards %>%
+  filter(Standard %in% annotations_names) %>%
+  select(Standard, compound.class.level.1, compound.class.level.2, compound.class.level.3) %>%
+  rename(compounds_names = Standard)
+
+# combine the two data frames
+kml_compoundclasses <- kml_compoundclasses %>%
+  left_join(filtered_classes, by = "compounds_names")
+
+fwrite(kml_compoundclasses, file = cluster_annotation_csv)
+``` 
+
+# Extract Cluster Assignment 
+```{r}
+kml_compounds_df <- dat %>%
+  filter(compounds_names %in% annotations_names) %>%
+  left_join(kml_compounds, by = "compounds_names") %>%
+  select(compounds_names, compounds_class, cluster, everything()) %>%
+  select(-clustProp) %>%
+  select(-compound.class.level.1)
+
+fwrite(kml_compounds_df, file = cluster_assingment)
+```
