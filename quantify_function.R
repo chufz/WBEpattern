@@ -1,10 +1,6 @@
-################ S T E P  3 - QUANTIFICATION ###################################
-
-## R E M A R K S ## 
-
-# this script needs to be open in order to run the "quantify_" scripts 
-
-
+################ QUANTIFICATION ###################################
+# functions that need to be loaded for quantify_script.R
+###################################################################
 quantify <- function(sample_frame, IS_sample_frame, cal_frame, levels, IS_cal_frame, IS_assignment, enr_factor=1, compounds="", output_pdf="./calib_curves.pdf"){
     if(ncol(sample_frame)!=ncol(cal_frame))message("cal_frame and sample_frame should have the same number of variables (compounds in columns)")
     if(nrow(cal_frame)!=nrow(IS_cal_frame))message("cal_frame and IS_cal_frame should have the same number of observables (samples in rows)")
@@ -54,8 +50,6 @@ quantify <- function(sample_frame, IS_sample_frame, cal_frame, levels, IS_cal_fr
     return(conc_table)
 }
 
-
-
 linear <- function(sample_frame, IS_sample_frame, cal_frame, levels, IS_cal_frame, IS_assignment, enr_factor = 1, compounds = "") {
   # Checking dimensions
   if(ncol(sample_frame) != ncol(cal_frame)) message("cal_frame and sample_frame should have the same number of variables (compounds in columns)")
@@ -89,8 +83,6 @@ linear <- function(sample_frame, IS_sample_frame, cal_frame, levels, IS_cal_fram
   # Returning the list of models and summaries
   return(adj_rsq)
 }
-
-
 
 findBestIS <- function(sample_frame, IS_sample_frame, RT_comp, RT_IS){
     IS_assignment <- vector(length=ncol(sample_frame))
