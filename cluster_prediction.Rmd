@@ -1,0 +1,234 @@
+---
+title: "Prediction of closest cluster for measured features"
+author: "Inga Haalck, supervised by Carolin Huber"
+date: "2024-07-24"
+output: html_document
+---
+
+# Loading of required of packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(tibble)
+library(janitor)
+library(ggplot2)
+```
+
+# Data that needs to be loaded
+
+```{r}
+mean_traj <- read.csv("05_a_kml_pred.csv") # table with centers of clusters
+NTS_df <- read.csv("02_c_datawrangling_NTS_readyforkml.csv") # non-target features that should be assigned to a cluster, columns 9:80 contains signal intensity values
+```
+
+# further definitions
+
+```{r}
+# Define cluster labels
+cluster_labels <- c("A", "B", "C", "D", "E")
+```
+
+# define predict function
+```{r}
+################################################################################
+#  define predict function
+predict_cluster <- function(NTS_subset_norm, mean_traj2, cluster_labels) {
+  # make sure NTS_subset_norm and mean_traj2 have the same number of columns
+  if (ncol(NTS_subset_norm) != ncol(mean_traj2)) {
+    stop("Number of columns in both data sets must match (number of time points).")
+  }
+
+  # make sure the length of cluster_labels matches the number of clusters
+  if (length(cluster_labels) != nrow(mean_traj2)) {
+    stop("Number of cluster labels must match the number of clusters.")
+  }
+
+  # make a new matrix to hold the calculated distances (number of features as rows, number of clusters as columns)
+  num_data_points <- nrow(NTS_subset_norm)
+  num_clusters <- nrow(mean_traj2)
+  distances <- matrix(NA, nrow = num_data_points, ncol = num_clusters)
+
+  # iterate over each data point (i) and cluster (j) and calculate the squared euclidean distance between each point and       cluster & store the distance in matrix 'distances'
+  for (i in 1:num_data_points) {
+    for (j in 1:num_clusters) {
+      distances[i, j] <- sum((NTS_subset_norm[i, ] - mean_traj2[j, ])^2)
+    }
+  }
+
+  # determine the closest cluster for each data point
+  closest_cluster_indices <- apply(distances, 1, which.min)
+
+  # give the closest cluster label to each features
+  closest_clusters <- cluster_labels[closest_cluster_indices]
+
+  # create a data frame with distances and the closest cluster assignments
+  distances_df <- as.data.frame(distances)
+  distances_df$ClosestCluster <- closest_clusters
+
+  return(distances_df)
+}
+###############################################################################
+# perform calculation (only run once - takes time)
+# distances_df1 <- predict_cluster(NTS_subset_norm, mean_traj2, cluster_labels)
+# Save the data frame as an R data file for later use
+# save(distances_df1, file = "distances_df_new6_5_morefeatures_sqrt.RData")
+################################################################################
+```
+
+# Data Wrangling for NTS data 
+
+## 1. Remove duplicated IDs and remove columns that are not needed 
+
+```{r}
+# make new column with featureID_ESImode to use later as unique identification of features
+NTS_df <- NTS_df %>%
+  mutate(id_ESI = paste(id, ESI_mode, sep = "_"), .before = ESI_mode)
+
+# Step 1: Calculate the mean of columns 9 to 80 for each row
+NTS_df_mean <- NTS_df %>%
+  rowwise() %>%
+  mutate(mean_value = mean(c_across(9:80), na.rm = TRUE)) %>%
+  ungroup()
+
+# Step 2: Group by 'id' and keep the row with the highest mean value within each group
+NTS_df_dup <- NTS_df_mean %>%
+  group_by(id) %>%
+  filter(mean_value == max(mean_value)) %>%
+  ungroup() %>%
+  select(-mean_value)
+
+# Step 3: Remove unnecessary information
+NTS_df2 <- NTS_df_dup %>%
+  select(-id, -ESI_mode, -rt, -mz, -target, -speclib, -urine)
+
+feat_ids <- NTS_df2$id_ESI
+
+# change colnames to match mean_traj data frame
+colnames(NTS_df2) <- colnames(mean_traj)
+```
+
+## 2. Replace NAs by 1/4 of min value (same as for targets)
+
+```{r}
+get_min <- apply(NTS_df2[, 2:ncol(NTS_df2)], 1, function(x) min(x, na.rm = TRUE))
+
+for (i in 1:nrow(NTS_df2)) {
+  xx <- which(is.na(NTS_df2[i, ]))
+  NTS_df2[i, xx] <- get_min[i] / 4
+}
+```
+
+## 3. Scale & log transformation (same as for target df used for kml) 
+
+```{R}
+NTS_subset <- NTS_df2 %>%
+  select(-X)
+
+NTS_subset_norm <- t(scale(t(log2(NTS_subset))))
+NTS_subset_norm <- as.data.frame(NTS_subset_norm)
+```
+
+--------------------------------------------------------------------------------
+
+# Cluster Prediction 
+
+## 1. Calculate Euclidean distance between clusters and features and choose the closest cluster 
+
+```{r}
+# remove grouping variable (cluster names) out of data frame
+mean_traj2 <- mean_traj %>%
+  select(-X)
+
+# Load the data frame back into R
+load("distances_df.RData")
+
+# Squared Euclidean distances
+distances_df2 <- distances_df %>%
+  mutate(ids = feat_ids)
+```
+
+## 2. Filter results (based on distance ratio or distance threshold)
+
+```{r}
+# Remove the last two columns
+distances_df_clustersonly <- distances_df2 %>%
+  select(1:(ncol(distances_df2) - 2))
+
+# Calculate the minimum distance for each row
+min_distances_2 <- distances_df_clustersonly %>%
+  rowwise() %>%
+  mutate(MinDistance = min(c_across(everything()), na.rm = TRUE)) %>%
+  pull(MinDistance)
+
+# Calculate the second minimum distance for each row
+second_min_distances_2 <- distances_df_clustersonly %>%
+  rowwise() %>%
+  mutate(SecondMinDistance = {
+    sorted_row <- sort(c_across(everything()))
+    if (length(sorted_row) > 1) sorted_row[2] else NA_real_
+  }) %>%
+  pull(SecondMinDistance)
+
+# Add closest and 2nd closest distances to distances_df dataframe
+distances_df2 <- distances_df2 %>%
+  mutate(
+    MinDistance = min_distances_2,
+    SecondMinDistance = second_min_distances_2
+  )
+
+# Set columns to numeric to enable calculations
+distances_df2 <- distances_df2 %>%
+  mutate(MinDistance = as.numeric(MinDistance)) %>%
+  mutate(SecondMinDistance = as.numeric(SecondMinDistance)) %>%
+  mutate(ratio = SecondMinDistance / MinDistance)
+
+# Apply the filtering criterion: ratio > 1.5
+filtered_distances_df2 <- distances_df2 %>%
+  filter(ratio > 1.5) %>%
+  filter(MinDistance < 44)
+
+# Save filtered feature ids
+filtered_feat <- filtered_distances_df2$ids
+
+# Save closest clusters for each feature
+closest_cluster <- filtered_distances_df2$ClosestCluster
+```
+
+# export ids, rt & mz for SIRIUS
+
+```{r}
+# all features
+NTS_df_short <- NTS_df_dup %>%
+  select(id_ESI, rt, mz) %>%
+  rename(ids = id_ESI)
+
+distances_short <- distances_df2 %>%
+  select(ClosestCluster, ids)
+
+NTS_clustered <- NTS_df_short %>%
+  inner_join(distances_short, by = "ids")
+
+NTS_clustered <- NTS_clustered %>%
+  separate(ids, into = c("id", "ESI"), sep = "_")
+```
+
+# export filtered features 
+
+```{r}
+NTS_df_short_filtered <- NTS_df_dup %>%
+  filter(id_ESI %in% filtered_feat) %>%
+  select(id_ESI, rt, mz) %>%
+  rename(ids = id_ESI)
+
+distances_short_filtered <- distances_df2 %>%
+  filter(ids %in% filtered_feat) %>%
+  select(ClosestCluster, ids)
+
+NTS_clustered_filtered <- NTS_df_short_filtered %>%
+  inner_join(distances_short_filtered, by = "ids")
+
+NTS_clustered_filtered <- NTS_clustered_filtered %>%
+  separate(ids, into = c("id", "ESI"), sep = "_")
+```
