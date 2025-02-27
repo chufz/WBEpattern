@@ -5,4 +5,4 @@ This repository contains the code used for data analysis. Containing the followi
 
  -  `quantify_function.R` and `quantify_script.R` for semi quantification in suspect screening applications
  - `clusteranalysis_kml.Rmd` for temporal cluster analysis example
- - `cluster_predicition` calulating the distances of new feature to already prioritized trends.
+ - `cluster_predicition.Rmd` calulating the distances of new feature to already prioritized trends.
